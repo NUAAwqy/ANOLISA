@@ -447,19 +447,43 @@ pub fn write_instance_snapshot(
 
 // ── Parsing helpers ──────────────────────────────────────────────────
 
-/// Parse `/sys/devices/system/cpu/present` format (e.g. "0-3" → 4, "0" → 1)
+/// Parse `/sys/devices/system/cpu/present`.
+///
+/// The kernel CPU-list grammar is a comma-separated list of singletons and
+/// inclusive ranges, so `"0-3"` → 4, `"0"` → 1 and `"0-3,8-11"` → 8. The result
+/// is the number of CPUs the file *describes*, not the highest index: a
+/// nonzero singleton such as `"7"` still counts as one CPU. Malformed or
+/// reversed entries (`"5-3"`, `"0-3,"`) and counts that do not fit in `u32`
+/// yield `None` so the caller can fall back to `nproc`.
 fn parse_cpu_present(content: &str) -> Option<u32> {
     let s = content.trim();
-    if s.contains('-') {
-        let parts: Vec<&str> = s.splitn(2, '-').collect();
-        if parts.len() == 2 {
-            let lo: u32 = parts[0].parse().ok()?;
-            let hi: u32 = parts[1].parse().ok()?;
-            return Some(hi - lo + 1);
-        }
+    if s.is_empty() {
+        return None;
     }
-    // Single CPU: "0"
-    s.parse::<u32>().ok().map(|v| v + 1)
+    let mut total: u32 = 0;
+    for part in s.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            return None;
+        }
+        let count = match part.split_once('-') {
+            Some((lo, hi)) => {
+                let lo: u32 = lo.trim().parse().ok()?;
+                let hi: u32 = hi.trim().parse().ok()?;
+                if hi < lo {
+                    return None;
+                }
+                hi.checked_sub(lo)?.checked_add(1)?
+            }
+            None => {
+                // A singleton must still be a valid CPU index; "abc" is not.
+                part.parse::<u32>().ok()?;
+                1
+            }
+        };
+        total = total.checked_add(count)?;
+    }
+    Some(total)
 }
 
 /// Parse `image_id="..."` from `/etc/image-id` content.
@@ -868,5 +892,31 @@ mod tests {
         assert_eq!(parse_cpu_present("0-7"), Some(8));
         assert_eq!(parse_cpu_present("0"), Some(1));
         assert_eq!(parse_cpu_present("2-5"), Some(4));
+    }
+
+    #[test]
+    fn test_parse_cpu_present_sparse_and_singleton_lists() {
+        // Sparse (hotplug/offline) topologies list several ranges, which the
+        // previous single-`splitn` parser could not decode at all.
+        assert_eq!(parse_cpu_present("0-3,8-11"), Some(8));
+        assert_eq!(parse_cpu_present("0,2,4"), Some(3));
+        assert_eq!(parse_cpu_present("0-1,4-5,8"), Some(5));
+        // A nonzero singleton presents exactly one CPU; the old `+1`
+        // fallback reported the index plus one instead.
+        assert_eq!(parse_cpu_present("7"), Some(1));
+        assert_eq!(parse_cpu_present("63"), Some(1));
+    }
+
+    #[test]
+    fn test_parse_cpu_present_rejects_malformed_lists() {
+        // A reversed range must be rejected rather than underflow into a
+        // near-`u32::MAX` count.
+        assert_eq!(parse_cpu_present("5-3"), None);
+        // The whole `u32` range describes 2^32 CPUs, which does not fit.
+        assert_eq!(parse_cpu_present("0-4294967295"), None);
+        assert_eq!(parse_cpu_present(""), None);
+        assert_eq!(parse_cpu_present("0-3,"), None);
+        assert_eq!(parse_cpu_present("abc"), None);
+        assert_eq!(parse_cpu_present("0-x"), None);
     }
 }
