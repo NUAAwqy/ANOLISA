@@ -272,10 +272,18 @@ impl BM25Store {
     pub fn remove(&mut self, rel_path: &str) -> Result<bool> {
         let tx = self.conn.transaction()?;
         let prefix = format!("{rel_path}/");
+        // Range scan instead of LIKE: SQLite's LIKE is ASCII case-insensitive
+        // by default and treats `_` / `%` inside the prefix as wildcards, so
+        // the old pattern cascaded into case-differing sibling directories
+        // that are distinct on ext4/xfs. `path >= prefix AND path < successor`
+        // compares with the column's BINARY collation and matches exactly the
+        // descendants of `rel_path` (`/` + 1 == `0`).
+        let successor = format!("{rel_path}0");
         let rowids: Vec<i64> = {
-            let mut stmt =
-                tx.prepare("SELECT rowid FROM files WHERE path = ?1 OR path LIKE ?2 || '%'")?;
-            let rows = stmt.query_map(params![rel_path, prefix], |r| r.get::<_, i64>(0))?;
+            let mut stmt = tx
+                .prepare("SELECT rowid FROM files WHERE path = ?1 OR (path >= ?2 AND path < ?3)")?;
+            let rows =
+                stmt.query_map(params![rel_path, prefix, successor], |r| r.get::<_, i64>(0))?;
             rows.flatten().collect()
         };
         let existed = !rowids.is_empty();
@@ -285,8 +293,8 @@ impl BM25Store {
         }
         // Cascade: remove corresponding vector embeddings.
         tx.execute(
-            "DELETE FROM files_vec WHERE path = ?1 OR path LIKE ?2 || '%'",
-            params![rel_path, prefix],
+            "DELETE FROM files_vec WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
+            params![rel_path, prefix, successor],
         )?;
         tx.commit()?;
         Ok(existed)
@@ -1477,6 +1485,37 @@ mod tests {
         // FTS row for the cascaded body is also gone.
         let hits = s.search("alpha", 5, true).unwrap();
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn remove_cascade_is_case_sensitive() {
+        // Regression for #7749: SQLite's LIKE is ASCII case-insensitive by
+        // default (and treats `_` in the prefix as a wildcard), so the old
+        // `path LIKE prefix || '%'` cascade deleted a case-differing
+        // sibling directory's rows even though ext4/xfs keep them apart.
+        let mut s = BM25Store::open_in_memory().unwrap();
+        s.upsert("notes/v2_final/a.md", 0, 0, "alpha", None)
+            .unwrap();
+        s.upsert("Notes/V2_FINAL/b.md", 0, 0, "bravo", None)
+            .unwrap();
+        s.upsert_vec("Notes/V2_FINAL/b.md", &[0.1, 0.2]).unwrap();
+
+        assert!(s.remove("notes/v2_final").unwrap());
+
+        let mut paths = s.known_paths().unwrap();
+        paths.sort();
+        assert_eq!(paths, vec!["Notes/V2_FINAL/b.md".to_string()]);
+        let hits = s.search("bravo", 5, true).unwrap();
+        assert_eq!(hits.len(), 1, "sibling FTS row must survive");
+        let vec_rows: i64 = s
+            .conn
+            .query_row(
+                "SELECT count(*) FROM files_vec WHERE path = ?1",
+                params!["Notes/V2_FINAL/b.md"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(vec_rows, 1, "sibling vector row must survive");
     }
 
     #[test]
