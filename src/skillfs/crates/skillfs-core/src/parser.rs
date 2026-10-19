@@ -227,7 +227,7 @@ fn parse_frontmatter(
 }
 
 pub(crate) fn validate_name(name: &str, issues: &mut Vec<String>) {
-    if name.len() > 64 {
+    if name.chars().count() > 64 {
         issues.push("name too long (max 64 chars)".to_string());
     }
     if !is_kebab_case(name) {
@@ -1147,6 +1147,33 @@ Body.
         let entry = parse_skill_md(&content, "fallback");
 
         assert!(entry.parse_status.is_degraded());
+    }
+
+    #[test]
+    fn name_length_limit_counts_chars_not_bytes() {
+        // The limit is documented in characters (types.rs "kebab-case, max 64
+        // chars", store.rs's adoption comment, and the issue text itself
+        // says chars). A 64-character CJK name is 192 bytes: within the
+        // documented limit, so only the kebab-case issue may be reported,
+        // never "too long".
+        let mut issues = Vec::new();
+        validate_name(&"技".repeat(64), &mut issues);
+        assert!(
+            issues.iter().any(|i| i.contains("not kebab-case")),
+            "non-ASCII must still fail the grammar check: {issues:?}"
+        );
+        assert!(
+            !issues.iter().any(|i| i.contains("too long")),
+            "64 chars is within the documented limit: {issues:?}"
+        );
+
+        // 65 characters crosses the documented limit and must be reported.
+        let mut issues = Vec::new();
+        validate_name(&"技".repeat(65), &mut issues);
+        assert!(
+            issues.iter().any(|i| i.contains("too long")),
+            "65 chars must report the length issue: {issues:?}"
+        );
     }
 
     #[test]
