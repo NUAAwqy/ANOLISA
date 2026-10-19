@@ -56,6 +56,13 @@ function normalizeRole(role: string): string {
   return role;
 }
 
+function tailBudgetError(tailTokens: number, tokenBudget: number): Error {
+  return new Error(
+    `selective-claw: protected fresh tail (${tailTokens} tokens) exceeds the token budget ` +
+      `(${tokenBudget}); the context cannot be assembled without truncating tool payloads`,
+  );
+}
+
 export class Assembler {
   constructor(private defaultFreshTailTurns: number = 3) {}
 
@@ -73,6 +80,9 @@ export class Assembler {
 
     if (turns.length <= freshTailTurns) {
       const allTokens = turns.reduce((s, t) => s + t.tokenCount, 0);
+      if (allTokens > input.tokenBudget) {
+        throw tailBudgetError(allTokens, input.tokenBudget);
+      }
       return {
         messages: input.messages,
         estimatedTokens: allTokens,
@@ -89,6 +99,21 @@ export class Assembler {
     const tail = turns.slice(-freshTailTurns);
     const older = turns.slice(0, -freshTailTurns);
 
+    // The fresh tail is protected: complete recent messages are never cut to
+    // manufacture a fitting context. When the tail alone exceeds the budget
+    // the assembly is rejected explicitly instead of returned over budget.
+    const tailMessages: AgentMessage[] = [];
+    for (const turn of tail) {
+      tailMessages.push(...turn.messages);
+    }
+    const tailTokens = tailMessages.reduce(
+      (total, message) => total + estimateTokens(JSON.stringify(message)),
+      0,
+    );
+    if (tailTokens > input.tokenBudget) {
+      throw tailBudgetError(tailTokens, input.tokenBudget);
+    }
+
     const summaryLines: string[] = [];
     let droppedTurns = 0;
     for (const turn of older) {
@@ -104,20 +129,36 @@ export class Assembler {
       }
     }
 
+    // Admit whole summary entries newest-first while the joined summary
+    // message still fits the remaining estimate; an entry that cannot fit is
+    // skipped, never truncated.
+    const header = "[summary] Earlier conversation context:";
+    const admitted: string[] = [];
+    for (const line of [...summaryLines].reverse()) {
+      const candidate: AgentMessage = {
+        role: "user",
+        content: [header, ...admitted, line].join("\n"),
+      };
+      if (estimateTokens(JSON.stringify(candidate)) + tailTokens <= input.tokenBudget) {
+        admitted.push(line);
+      }
+    }
+
     const result: AgentMessage[] = [];
 
-    if (summaryLines.length > 0) {
+    if (admitted.length > 0) {
       result.push({
         role: "user",
-        content: ["[summary] Earlier conversation context:", ...summaryLines].join("\n"),
+        content: [header, ...admitted.reverse()].join("\n"),
       });
     }
 
-    for (const turn of tail) {
-      result.push(...turn.messages);
-    }
+    result.push(...tailMessages);
 
-    const estimatedTokens = result.reduce((total, message) => total + estimateTokens(JSON.stringify(message)), 0);
+    const estimatedTokens = result.reduce(
+      (total, message) => total + estimateTokens(JSON.stringify(message)),
+      0,
+    );
 
     return {
       messages: result,
@@ -125,8 +166,8 @@ export class Assembler {
       stats: {
         totalTurns: turns.length,
         freshTailTurnCount: tail.length,
-        freshTailMessageCount: tail.reduce((s, t) => s + t.messages.length, 0),
-        summaryCount: summaryLines.length,
+        freshTailMessageCount: tailMessages.length,
+        summaryCount: admitted.length,
         droppedTurns,
       },
     };

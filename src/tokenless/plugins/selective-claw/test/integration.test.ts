@@ -99,7 +99,7 @@ describe("Integration: gateway lifecycle simulation", () => {
   // ─── 2. 上下文裁剪（assemble） ───
 
   describe("2. context trimming (assemble)", () => {
-    it("reports overflow from a large summary and preserves structured fresh-tail messages", async () => {
+    it("drops the oversized summary and keeps the context within budget", async () => {
       const messages = buildMessages(4);
       const toolResult: AgentMessage = {
         role: "toolResult",
@@ -110,28 +110,20 @@ describe("Integration: gateway lifecycle simulation", () => {
       };
       messages.push(toolResult);
       engine.setSummarizeFn(async () => "Detailed summary ".repeat(200));
-      const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-      try {
-        await engine.afterTurn({ sessionId: SESSION, messages });
-        const result = await engine.assemble({ sessionId: SESSION, messages, tokenBudget: 500 });
+      await engine.afterTurn({ sessionId: SESSION, messages });
+      const result = await engine.assemble({ sessionId: SESSION, messages, tokenBudget: 500 });
 
-        expect(result.estimatedTokens).toBeGreaterThan(500);
-        expect(warning).toHaveBeenCalledWith(
-          `[selective-claw] assembled context (${result.estimatedTokens} tokens) exceeds budget (500)`,
-        );
-        expect(result.estimatedTokens).toBe(result.messages.reduce(
-          (total, message) => total + estimateTokens(JSON.stringify(message)),
-          0,
-        ));
-        const tail = messages.slice(2);
-        for (let index = 0; index < tail.length; index++) {
-          expect(result.messages[index + 1]).toBe(tail[index]);
-        }
-        expect(result.messages[result.messages.length - 1]).toBe(toolResult);
-      } finally {
-        warning.mockRestore();
+      expect(result.estimatedTokens).toBeLessThanOrEqual(500);
+      expect(result.estimatedTokens).toBe(result.messages.reduce(
+        (total, message) => total + estimateTokens(JSON.stringify(message)),
+        0,
+      ));
+      const tail = messages.slice(2);
+      for (let index = 0; index < tail.length; index++) {
+        expect(result.messages[index]).toBe(tail[index]);
       }
+      expect(result.messages[result.messages.length - 1]).toBe(toolResult);
     });
 
     it("returns all messages when turns <= freshTailTurns", async () => {

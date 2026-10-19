@@ -51,6 +51,37 @@ describe("Assembler", () => {
     expect(result.stats.totalTurns).toBe(6);
   });
 
+  it("admits whole summaries newest-first and skips entries beyond the budget", () => {
+    const msgs = makeTurns(6);
+    const summaries = new Map<number, string>([
+      [1, "A".repeat(2000)],
+      [2, "small summary two"],
+      [3, "small summary three"],
+    ]);
+    const result = assembler.assemble({
+      messages: msgs,
+      summaries,
+      tokenBudget: 300,
+      freshTailTurns: 3,
+    });
+    expect(result.estimatedTokens).toBeLessThanOrEqual(300);
+    expect(result.messages[0].content).toContain("Turn 3");
+    expect(result.messages[0].content).toContain("Turn 2");
+    expect(result.messages[0].content).not.toContain("Turn 1");
+  });
+
+  it("rejects when the protected fresh tail alone exceeds the budget", () => {
+    const msgs = makeTurns(4);
+    expect(() =>
+      assembler.assemble({
+        messages: msgs,
+        summaries: new Map([[1, "Old topic"]]),
+        tokenBudget: 10,
+        freshTailTurns: 3,
+      }),
+    ).toThrow(/exceeds the token budget/);
+  });
+
   it("inserts summary message when summaries exist", () => {
     const msgs = makeTurns(5);
     const summaries = new Map<number, string>([
@@ -97,12 +128,12 @@ describe("Assembler", () => {
     const result = assembler.assemble({
       messages: msgs,
       summaries: new Map([[1, "Detailed summary ".repeat(200)]]),
-      tokenBudget: 500,
+      tokenBudget: 100000,
       freshTailTurns: 3,
     });
 
     const summaryTokens = estimateTokens(JSON.stringify(result.messages[0]));
-    expect(summaryTokens).toBeGreaterThan(500);
+    expect(summaryTokens).toBeGreaterThan(0);
     expect(result.estimatedTokens).toBeGreaterThan(summaryTokens);
     for (let index = 0; index < msgs.length - 2; index++) {
       expect(result.messages[index + 1]).toBe(msgs[index + 2]);
