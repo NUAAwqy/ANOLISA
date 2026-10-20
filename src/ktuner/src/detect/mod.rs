@@ -2081,6 +2081,7 @@ const SERVICE_COMPANION_TOOLS: &[&str] = &[
     "clickhouse-keeper",
     "oracle-cloud-agent",
     "oracle-cloud-agent-updater",
+    "grafana-operator",
 ];
 
 /// Whether the program `program` is a *tool* of a service rather than the
@@ -4852,6 +4853,11 @@ mod tests {
             // platform's default agents reported an Oracle database.
             ("oracle-cloud-agent", "oracle", "Oracle"),
             ("oracle-cloud-agent-updater", "oracle", "Oracle"),
+            // Grafana's Kubernetes control plane: it provisions Grafana
+            // instances as separate Deployments and never runs the
+            // dashboard itself, but its comm keeps `grafana` as the first
+            // name run, so a node hosting only the operator reported Grafana.
+            ("grafana-operator", "grafana", "Grafana"),
         ] {
             let path = root.join(name);
             fs::copy("/bin/sleep", &path).expect("copy sleep to the companion's name");
