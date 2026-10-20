@@ -2073,11 +2073,18 @@ const CLICKHOUSE_CLIENT_TOOLS: &[&str] = &[
 /// first name run is `consul`. A node that only runs the sidecar reported
 /// Consul and took the cache program (swappiness, the dirty limits, THP off,
 /// `vm.vfs_cache_pressure`, the busy-poll pair).
+/// `envoy-gateway` is the same shape for Envoy: it is the Envoy Gateway
+/// project's control plane, which provisions the Envoy data planes as
+/// separate Deployments and never runs the proxy itself. Its comm keeps
+/// `envoy` as the first name run, so a node running only the control plane
+/// reported Envoy, took the classifier's web class and the busy-poll pair
+/// meant for a request-path proxy.
 const SERVICE_COMPANION_TOOLS: &[&str] = &[
     "consul-template",
     "consul-dataplane",
     "consul-esm",
     "grafana-agent",
+    "envoy-gateway",
     "clickhouse-keeper",
     "oracle-cloud-agent",
     "oracle-cloud-agent-updater",
@@ -4842,6 +4849,10 @@ mod tests {
             // program that talks to Consul servers, not the KV server itself.
             ("consul-dataplane", "consul", "Consul"),
             ("grafana-agent", "grafana", "Grafana"),
+            // Envoy Gateway's control plane: it provisions Envoy data planes
+            // as separate Deployments and never runs the proxy itself, but
+            // its comm keeps `envoy` as the first name run.
+            ("envoy-gateway", "envoy", "Envoy"),
             // ClickHouse's coordination daemon: `has_process("clickhouse")` is
             // satisfied by its first name run, and the whole database program
             // (including `vm.nr_hugepages` and `kernel.shmmni`) then ran on a
