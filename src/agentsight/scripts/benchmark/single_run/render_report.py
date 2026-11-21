@@ -83,6 +83,11 @@ def summarize_load(path: Path | None) -> dict[str, Any]:
     latency: dict[str, list[float]] = {name: [] for name in LOAD_METRICS}
     for item in json_lines(path):
         metric = item.get("metric")
+        # a valid JSON record can still carry a non-string metric name; it
+        # identifies no known metric, so skip the record instead of raising on
+        # the unhashable LOAD_METRICS lookup below
+        if not isinstance(metric, str):
+            continue
         data = item.get("data")
         if not isinstance(data, dict):
             continue
