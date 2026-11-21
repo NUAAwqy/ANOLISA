@@ -130,6 +130,66 @@ def test_summarize_load_skips_non_string_metric_names(broken_metric) -> None:
         assert summary["latency"]["avg"] == pytest.approx(5)
 
 
+def test_missing_metric_key_is_skipped(tmp_path: Path) -> None:
+    path = tmp_path / "load.jsonl"
+    path.write_bytes(
+        point("benchmark_requests", 12)
+        + b'{"type": "Point", "data": {"value": 1}}\n'
+        + point("benchmark_http_success", 12)
+    )
+    summary = render_report.summarize_load(path)
+    assert summary["requests"] == 12
+    assert summary["http_success"] == 12
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_summarize_load_reads_gzip_variants(tmp_path: Path, compressed: bool) -> None:
+    path = artifact(
+        tmp_path / "load.jsonl",
+        compressed,
+        broken_payload(["unknown"]) + point("benchmark_latency", 7),
+    )
+    summary = render_report.summarize_load(path)
+    assert summary["requests"] == 12
+    assert summary["latency"]["avg"] == pytest.approx(6)
+
+
+def test_report_markdown_keeps_the_latency_row(tmp_path: Path) -> None:
+    load_path = write_inputs(
+        tmp_path / "broken",
+        False,
+        broken_payload(["unknown"]),
+    )
+    output, summary = tmp_path / "report.md", tmp_path / "summary.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            render_report.__file__,
+            "--protocol",
+            "json",
+            "--qps",
+            "2",
+            "--duration",
+            "6",
+            "--metrics",
+            str(tmp_path / "broken" / "metrics.csv"),
+            "--load-results",
+            str(load_path),
+            "--output",
+            str(output),
+            "--summary-output",
+            str(summary),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    markdown = output.read_text()
+    assert "custom latency (ms)" in markdown
+    assert "5.00 ms" in markdown
+
+
 def test_only_broken_records_are_skipped(tmp_path: Path) -> None:
     path = tmp_path / "load.jsonl"
     path.write_bytes(
